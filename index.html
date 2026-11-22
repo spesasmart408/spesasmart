@@ -1,0 +1,342 @@
+
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpesaSmart</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f4f7f5;color:#20332b;font-family:Arial,sans-serif}
+header{background:#087b55;color:white;padding:24px 18px;border-radius:0 0 24px 24px}
+header h1{margin:0;font-size:27px}
+header p{margin:7px 0 0;opacity:.9}
+main{max-width:650px;margin:auto;padding:18px}
+.card{background:white;padding:19px;border-radius:18px;margin:15px 0;box-shadow:0 3px 14px #0000000b}
+h2{font-size:19px;margin:0 0 15px}
+input,button{font:inherit}
+input:not([type=file]){width:100%;padding:13px;margin:7px 0 13px;border:1px solid #d8e2dc;border-radius:10px}
+button{border:0;border-radius:11px;padding:13px 17px;background:#087b55;color:white;font-weight:bold;cursor:pointer}
+button.secondary{background:#e7f3ed;color:#087b55}
+button:disabled{opacity:.5}
+.actions{display:flex;gap:9px;flex-wrap:wrap}
+.actions button{flex:1}
+.amount{font-size:34px;font-weight:bold;color:#087b55;margin:8px 0}
+.muted{color:#738078;font-size:13px}
+.receipt{padding:13px 0;border-bottom:1px solid #edf0ee}
+.receipt:last-child{border:0}
+.receipt strong{display:block;margin-bottom:5px}
+.hidden{display:none!important}
+.error{color:#b42318;font-size:14px}
+.success{color:#087b55;font-size:14px}
+label{font-size:14px;font-weight:bold}
+#status{margin:10px 0;font-size:14px}
+footer{text-align:center;color:#849087;font-size:12px;padding:25px}
+</style>
+</head>
+<body>
+<header>
+<h1>🛒 SpesaSmart</h1>
+<p>La tua spesa, sempre sotto controllo.</p>
+</header>
+
+<main>
+<section class="card" id="auth">
+<h2>Accedi a SpesaSmart</h2>
+<p class="muted">Crea il tuo account oppure accedi.</p>
+<label>Email</label>
+<input id="email" type="email" placeholder="La tua email">
+<label>Password</label>
+<input id="password" type="password" placeholder="Almeno 6 caratteri">
+<div class="actions">
+<button onclick="signIn()">Accedi</button>
+<button class="secondary" onclick="signUp()">Registrati</button>
+</div>
+<div id="authMessage"></div>
+</section>
+
+<div id="app" class="hidden">
+<section class="card">
+<div class="actions" style="justify-content:space-between;align-items:center">
+<strong id="welcome">Le mie spese</strong>
+<button class="secondary" onclick="signOut()">Esci</button>
+</div>
+</section>
+
+<section class="card">
+<h2>Il mio bilancio</h2>
+<p class="muted">Totale speso questo mese</p>
+<div class="amount" id="monthTotal">€ 0,00</div>
+<p class="muted">Totale speso quest'anno</p>
+<h2 id="yearTotal">€ 0,00</h2>
+<p class="muted" id="receiptCount">0 spese registrate</p>
+</section>
+
+<section class="card">
+<h2>➕ Aggiungi una spesa</h2>
+<label>Supermercato</label>
+<input id="store" placeholder="Es. Coop, Lidl, Conad">
+<label>Data della spesa</label>
+<input id="date" type="date">
+<label>Importo totale (€)</label>
+<input id="total" type="number" min="0.01" step="0.01" placeholder="Es. 45,90">
+<div class="actions">
+<button onclick="saveReceipt('manual')">Salva spesa</button>
+</div>
+</section>
+
+<section class="card">
+<h2>📷 Fotografa lo scontrino</h2>
+<p class="muted">Scatta una foto o scegli un'immagine. Proveremo a leggere automaticamente il totale.</p>
+<input id="photo" type="file" accept="image/*" capture="environment">
+<div class="actions">
+<button class="secondary" id="readButton" onclick="readReceipt()">Leggi scontrino</button>
+</div>
+<p id="ocrStatus" class="muted"></p>
+</section>
+
+<section class="card">
+<h2>📋 Le mie ultime spese</h2>
+<div id="receipts"><p class="muted">Caricamento...</p></div>
+</section>
+</div>
+<div id="status"></div>
+</main>
+<footer>SpesaSmart · Gestisci meglio la tua spesa</footer>
+
+<script>
+const SUPABASE_URL = 'https://zixzczlxzawtcwnuejpk.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_ZD_H8dZFLwJe7uOZx_uPAw_trT0eZjw';
+
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let currentUser = null;
+let receipts = [];
+
+const euro = value => new Intl.NumberFormat('it-IT',{
+  style:'currency',currency:'EUR'
+}).format(Number(value || 0));
+
+const safe = value => String(value ?? '').replace(/[&<>"']/g,c=>({
+  '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+}[c]));
+
+function today(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+document.getElementById('date').value=today();
+
+function message(text,type='error'){
+  const el=document.getElementById('status');
+  el.className=type;
+  el.textContent=text;
+}
+
+async function signUp(){
+  const email=document.getElementById('email').value.trim();
+  const password=document.getElementById('password').value;
+  if(!email || password.length<6){
+    document.getElementById('authMessage').textContent='Inserisci email e password di almeno 6 caratteri.';
+    return;
+  }
+  const {data,error}=await db.auth.signUp({email,password});
+  const el=document.getElementById('authMessage');
+  if(error){el.textContent=error.message;return;}
+  el.textContent=data.session
+    ? 'Registrazione completata!'
+    : 'Controlla la tua email per confermare la registrazione.';
+  if(data.session) await checkSession();
+}
+
+async function signIn(){
+  const email=document.getElementById('email').value.trim();
+  const password=document.getElementById('password').value;
+  const {error}=await db.auth.signInWithPassword({email,password});
+  if(error){
+    document.getElementById('authMessage').textContent=error.message;
+    return;
+  }
+  await checkSession();
+}
+
+async function signOut(){
+  await db.auth.signOut();
+  currentUser=null;
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('auth').classList.remove('hidden');
+}
+
+async function checkSession(){
+  const {data}=await db.auth.getSession();
+  currentUser=data.session?.user || null;
+  document.getElementById('auth').classList.toggle('hidden',!!currentUser);
+  document.getElementById('app').classList.toggle('hidden',!currentUser);
+  if(currentUser){
+    document.getElementById('welcome').textContent='Ciao! '+(currentUser.email || 'utente');
+    await loadReceipts();
+  }
+}
+
+async function loadReceipts(){
+  if(!currentUser)return;
+  message('Caricamento delle spese...','muted');
+  const {data,error}=await db.from('grocery_receipts')
+    .select('*')
+    .order('purchased_at',{ascending:false});
+  if(error){
+    message('Errore nel caricamento: '+error.message);
+    return;
+  }
+  receipts=data || [];
+  renderReceipts();
+  message('');
+}
+
+function renderReceipts(){
+  const now=new Date();
+  const month=now.getMonth();
+  const year=now.getFullYear();
+
+  const monthly=receipts.filter(r=>{
+    const d=new Date(r.purchased_at+'T12:00:00');
+    return d.getMonth()===month && d.getFullYear()===year;
+  });
+  const yearly=receipts.filter(r=>
+    Number(r.purchased_at.slice(0,4))===year
+  );
+
+  const sum=list=>list.reduce((n,r)=>n+Number(r.total_amount),0);
+
+  document.getElementById('monthTotal').textContent=euro(sum(monthly));
+  document.getElementById('yearTotal').textContent=euro(sum(yearly));
+  document.getElementById('receiptCount').textContent=
+    receipts.length+' spese registrate';
+
+  const container=document.getElementById('receipts');
+  if(!receipts.length){
+    container.innerHTML='<p class="muted">Non hai ancora registrato spese. Aggiungi il tuo primo scontrino!</p>';
+    return;
+  }
+
+  container.innerHTML=receipts.map(r=>`
+    <div class="receipt">
+      <strong>${safe(r.store_name || 'Supermercato')}</strong>
+      <span class="muted">${safe(r.purchased_at)} · ${r.entry_method==='photo'?'Foto':'Manuale'}</span>
+      <div style="font-weight:bold;margin-top:6px">${euro(r.total_amount)}</div>
+    </div>
+  `).join('');
+}
+
+async function saveReceipt(method){
+  if(!currentUser){
+    message('Accedi prima di salvare una spesa.');
+    return;
+  }
+  const store=document.getElementById('store').value.trim();
+  const date=document.getElementById('date').value;
+  const total=Number(document.getElementById('total').value);
+
+  if(!date || !Number.isFinite(total) || total<=0){
+    message('Inserisci una data e un importo valido.');
+    return;
+  }
+
+  const {error}=await db.from('grocery_receipts').insert({
+    user_id:currentUser.id,
+    store_name:store || null,
+    purchased_at:date,
+    total_amount:total,
+    entry_method:method
+  });
+
+  if(error){
+    message('Non sono riuscito a salvare: '+error.message);
+    return;
+  }
+
+  document.getElementById('store').value='';
+  document.getElementById('total').value='';
+  document.getElementById('date').value=today();
+  message('Spesa salvata correttamente!','success');
+  await loadReceipts();
+}
+
+async function readReceipt(){
+  const file=document.getElementById('photo').files[0];
+  if(!file){
+    document.getElementById('ocrStatus').textContent='Prima scegli o fotografa uno scontrino.';
+    return;
+  }
+
+  const button=document.getElementById('readButton');
+  const status=document.getElementById('ocrStatus');
+  button.disabled=true;
+  status.textContent='Sto leggendo lo scontrino... Attendi, potrebbe richiedere qualche secondo.';
+
+  try{
+    const result=await Tesseract.recognize(file,'ita');
+    const text=result.data.text;
+    const lines=text.split('\n');
+    const amounts=[];
+
+    for(const line of lines){
+      const matches=line.match(/(?:€\s*)?(\d{1,4}[,.]\d{2})/g);
+      if(matches){
+        for(const match of matches){
+          const n=Number(match.replace('€','').trim().replace(',','.'));
+          if(n>0 && n<100000) amounts.push(n);
+        }
+      }
+    }
+
+    const totalKeywords=/totale|da pagare|importo|tot\.|carta/i;
+    const preferred=lines.filter(line=>totalKeywords.test(line))
+      .flatMap(line=>line.match(/(?:€\s*)?(\d{1,4}[,.]\d{2})/g)||[])
+      .map(v=>Number(v.replace('€','').trim().replace(',','.')))
+      .filter(v=>v>0);
+
+    const detected=preferred.length
+      ? preferred[preferred.length-1]
+      : amounts.length ? Math.max(...amounts) : null;
+
+    if(detected){
+      document.getElementById('total').value=detected.toFixed(2);
+      status.textContent='Importo individuato: '+euro(detected)+'. Controllalo e poi premi Salva spesa.';
+    }else{
+      status.textContent='Non ho individuato il totale. Inseriscilo manualmente.';
+    }
+
+    const storeMatch=text.match(/(LIDL|COOP|CONAD|ESSELUNGA|EUROSPIN|CARREFOUR|PAM|MD)\b/i);
+    if(storeMatch){
+      document.getElementById('store').value=storeMatch[0];
+    }
+
+    status.textContent+=' La foto è stata elaborata nel browser e non è stata caricata.';
+    window.lastReceiptMethod='photo';
+  }catch(error){
+    status.textContent='Non sono riuscito a leggere la foto. Puoi inserire i dati manualmente.';
+  }finally{
+    button.disabled=false;
+  }
+}
+
+document.getElementById('total').addEventListener('change',()=>{
+  // L'utente può correggere liberamente l'importo riconosciuto.
+});
+
+db.auth.onAuthStateChange((_event,session)=>{
+  currentUser=session?.user || null;
+  document.getElementById('auth').classList.toggle('hidden',!!currentUser);
+  document.getElementById('app').classList.toggle('hidden',!currentUser);
+  if(currentUser){
+    setTimeout(()=>loadReceipts(),0);
+  }
+});
+
+checkSession();
+</script>
+</body>
+</html>
